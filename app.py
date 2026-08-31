@@ -57,23 +57,53 @@ try:
         color = "normal" if spread > 0 else "inverse"
         col4.metric("当前套利信号", signal, delta_color=color)
 
-        # 图表 1：SPY 与理论价格对比
-        st.subheader("SPY 实际价格 vs 理论价格 (基于 JNK 估算)")
-        fig1 = go.Figure()
-        fig1.add_trace(go.Scatter(x=df.index, y=df['SPY'], mode='lines', name='SPY 实际价格', line=dict(color='blue')))
-        fig1.add_trace(go.Scatter(x=df.index, y=df['Implied_SPY'], mode='lines', name='SPY 理论价格', line=dict(color='orange', dash='dash')))
-        fig1.update_layout(height=400, template="plotly_white", hovermode="x unified")
-        st.plotly_chart(fig1, use_container_width=True)
+        # 创建 2 行 1 列的子图结构，共享 X 轴以实现上下完美对齐
+        fig = make_subplots(
+            rows=2, 
+            cols=1, 
+            shared_xaxes=True, 
+            vertical_spacing=0.08,
+            subplot_titles=("SPY 实际价格 vs 理论价格 (基于 JNK)", "JNK/SPY 乖离率 Z-Score"),
+            row_heights=[0.6, 0.4]  # 上图占比 60%，下图占比 40%
+        )
 
-        # 图表 2：Z-Score 乖离率
-        st.subheader("JNK/SPY 乖离率 Z-Score")
-        st.write("当 Z-Score 低于 -1.5 时，表明 SPY 相对于 JNK 被严重低估，是做多末日/周度 Call 的信号区域。")
-        fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=df.index, y=df['Z_Score'], mode='lines', name='Z-Score', fill='tozeroy'))
-        fig2.add_hline(y=1.5, line_dash="dash", line_color="red", annotation_text="SPY超买区")
-        fig2.add_hline(y=-1.5, line_dash="dash", line_color="green", annotation_text="SPY超卖区 (介入做多)")
-        fig2.update_layout(height=300, template="plotly_white")
-        st.plotly_chart(fig2, use_container_width=True)
+        # 1. 绘制上图：SPY 实际价格 vs 理论价格
+        fig.add_trace(
+            go.Scatter(x=df.index, y=df['SPY'], mode='lines', name='SPY 实际价格', line=dict(color='#1f77b4')), 
+            row=1, col=1
+        )
+        fig.add_trace(
+            go.Scatter(x=df.index, y=df['Implied_SPY'], mode='lines', name='SPY 理论价格', line=dict(color='#ff7f0e', dash='dash')), 
+            row=1, col=1
+        )
+
+        # 2. 绘制下图：Z-Score 乖离率
+        fig.add_trace(
+            go.Scatter(x=df.index, y=df['Z_Score'], mode='lines', name='Z-Score', fill='tozeroy', line=dict(color='#2ca02c')), 
+            row=2, col=1
+        )
+
+        # 添加下图超买超卖阈值线
+        fig.add_hline(y=1.5, line_dash="dash", line_color="red", annotation_text="超买", row=2, col=1)
+        fig.add_hline(y=-1.5, line_dash="dash", line_color="green", annotation_text="超卖", row=2, col=1)
+
+        # 统一布局调整：图例置底 + 横向排列
+        fig.update_layout(
+            height=650,
+            template="plotly_white",
+            hovermode="x unified",  # 鼠标悬停时上下图时间线自动联动对齐
+            legend=dict(
+                orientation="h",     # 图例水平排列
+                yanchor="bottom",
+                y=-0.18,             # 调整至底部外侧 (负值代表在坐标轴下方)
+                xanchor="center",
+                x=0.5                # 居中对齐
+            ),
+            margin=dict(l=20, r=20, t=40, b=60)
+        )
+
+        # 渲染图表
+        st.plotly_chart(fig, use_container_width=True)
 
 except Exception as e:
     st.error(f"发生错误: {e}")
