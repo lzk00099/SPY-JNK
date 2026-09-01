@@ -35,13 +35,13 @@ def load_data(period, interval):
             jnk_live = live_data['JNK'].dropna().iloc[-1]
             
             if interval == "1d":
-                # 获取美东时间的今天，并将其格式化为 00:00:00，去除时区以完美匹配 yfinance 的日线索引
-                today_est = pd.Timestamp.now(tz="US/Eastern").normalize().tz_localize(None)
+                # 获取美东时间的今天，必须使用标准名称 "America/New_York"
+                today_est = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None)
                 last_idx = data.index[-1]
                 
                 # 检查 yfinance 历史数据是否带有时区，如果有，就给 today 也补上相同格式
                 if last_idx.tz is not None:
-                     today_est = pd.Timestamp.now(tz="US/Eastern").normalize().tz_localize(last_idx.tz)
+                     today_est = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(last_idx.tz)
 
                 # 核心覆盖逻辑：如果历史数据的最后一天已经是今天，直接用刚才抓的盘中现价覆盖；如果不是，就新增今天这一行
                 if last_idx.normalize() == today_est:
