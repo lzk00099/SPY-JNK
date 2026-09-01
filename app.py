@@ -23,41 +23,44 @@ if st.sidebar.button("🔄 立即刷新盘中实时数据"):
 @st.cache_data(ttl=60)
 def load_data(period, interval):
     tickers = ["SPY", "JNK"]
-    # 1. 抓取历史数据
+    # 1. 抓取历史日线数据
     data = yf.download(tickers, period=period, interval=interval)['Close']
     data = data.dropna()
     
-    # 2. 盘中实时补全：获取最新的跳动价格并更新到 DataFrame 末端
+    # 2. 强行抓取盘中最新的 1分钟线 收盘价 (比 fast_info 稳定100倍)
     try:
-        spy_price = yf.Ticker("SPY").fast_info.get('lastPrice') or yf.Ticker("SPY").fast_info.get('regularMarketPrice')
-        jnk_price = yf.Ticker("JNK").fast_info.get('lastPrice') or yf.Ticker("JNK").fast_info.get('regularMarketPrice')
-        
-        if spy_price and jnk_price and not data.empty:
-            last_idx = data.index[-1]
-            now_tz = last_idx.tz if hasattr(last_idx, 'tz') and last_idx.tz is not None else None
+        live_data = yf.download(tickers, period="1d", interval="1m")['Close']
+        if not live_data.empty:
+            spy_live = live_data['SPY'].dropna().iloc[-1]
+            jnk_live = live_data['JNK'].dropna().iloc[-1]
             
             if interval == "1d":
-                # 日线模式：获取今天的时间戳
-                today = pd.Timestamp.now(tz=now_tz).floor('D')
+                # 获取美东时间的今天，并将其格式化为 00:00:00，去除时区以完美匹配 yfinance 的日线索引
+                today_est = pd.Timestamp.now(tz="US/Eastern").normalize().tz_localize(None)
+                last_idx = data.index[-1]
                 
-                # 如果历史数据最后一天已经是今天，直接覆盖现价；如果是昨天，新增今天这一行
-                if last_idx.strftime('%Y-%m-%d') == today.strftime('%Y-%m-%d'):
-                    data.loc[last_idx, 'SPY'] = spy_price
-                    data.loc[last_idx, 'JNK'] = jnk_price
+                # 检查 yfinance 历史数据是否带有时区，如果有，就给 today 也补上相同格式
+                if last_idx.tz is not None:
+                     today_est = pd.Timestamp.now(tz="US/Eastern").normalize().tz_localize(last_idx.tz)
+
+                # 核心覆盖逻辑：如果历史数据的最后一天已经是今天，直接用刚才抓的盘中现价覆盖；如果不是，就新增今天这一行
+                if last_idx.normalize() == today_est:
+                    data.loc[last_idx, 'SPY'] = spy_live
+                    data.loc[last_idx, 'JNK'] = jnk_live
                 else:
-                    data.loc[today, 'SPY'] = spy_price
-                    data.loc[today, 'JNK'] = jnk_price
+                    data.loc[today_est, 'SPY'] = spy_live
+                    data.loc[today_est, 'JNK'] = jnk_live
             else:
-                # 分钟模式：将最新时刻追加或更新到最后一行
-                now_ts = pd.Timestamp.now(tz=now_tz)
-                data.loc[now_ts, 'SPY'] = spy_price
-                data.loc[now_ts, 'JNK'] = jnk_price
+                # 如果用户选的本身就是分钟线(15m, 30m等)，直接把 1分钟线 的最新一秒时间戳塞进去
+                now_idx = live_data.index[-1]
+                data.loc[now_idx, 'SPY'] = spy_live
+                data.loc[now_idx, 'JNK'] = jnk_live
+                
     except Exception as e:
-        # 若盘中获取实时现价失败，回退使用 download 的历史数据
-        pass
-
+        # 如果因为网络问题抓取实时数据失败，在侧边栏显示警告，方便排查
+        st.sidebar.warning(f"⚠️ 实时现价抓取失败，退回历史收盘价。报错: {e}")
+        
     return data
-
 try:
     df = load_data(period, interval)
     
