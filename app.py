@@ -12,21 +12,57 @@ st.title("JNK/SPY 乖离率与并轨追踪模型")
 # 侧边栏设置
 st.sidebar.header("参数设置")
 period = st.sidebar.selectbox("时间范围", ["5d", "1mo", "3mo", "6mo", "1y"], index=0)
-interval = st.sidebar.selectbox("K线级别", ["5m", "15m", "30m", "1h", "1d"], index=1)
+interval = st.sidebar.selectbox("K线级别", ["5m", "15m", "30m", "1h", "1d"], index=4) # 默认选 1d
 rolling_window = st.sidebar.slider("滚动回归窗口(期数)", 10, 100, 20)
 
-@st.cache_data(ttl=300) # 缓存5分钟
+# 手动刷新按钮
+if st.sidebar.button("🔄 立即刷新盘中实时数据"):
+    st.cache_data.clear()
+
+# 盘中将缓存设为 60 秒 (1分钟自动过期)
+@st.cache_data(ttl=60)
 def load_data(period, interval):
     tickers = ["SPY", "JNK"]
+    # 1. 抓取历史数据
     data = yf.download(tickers, period=period, interval=interval)['Close']
     data = data.dropna()
+    
+    # 2. 盘中实时补全：获取最新的跳动价格并更新到 DataFrame 末端
+    try:
+        spy_price = yf.Ticker("SPY").fast_info.get('lastPrice') or yf.Ticker("SPY").fast_info.get('regularMarketPrice')
+        jnk_price = yf.Ticker("JNK").fast_info.get('lastPrice') or yf.Ticker("JNK").fast_info.get('regularMarketPrice')
+        
+        if spy_price and jnk_price and not data.empty:
+            last_idx = data.index[-1]
+            now_tz = last_idx.tz if hasattr(last_idx, 'tz') and last_idx.tz is not None else None
+            
+            if interval == "1d":
+                # 日线模式：获取今天的时间戳
+                today = pd.Timestamp.now(tz=now_tz).floor('D')
+                
+                # 如果历史数据最后一天已经是今天，直接覆盖现价；如果是昨天，新增今天这一行
+                if last_idx.strftime('%Y-%m-%d') == today.strftime('%Y-%m-%d'):
+                    data.loc[last_idx, 'SPY'] = spy_price
+                    data.loc[last_idx, 'JNK'] = jnk_price
+                else:
+                    data.loc[today, 'SPY'] = spy_price
+                    data.loc[today, 'JNK'] = jnk_price
+            else:
+                # 分钟模式：将最新时刻追加或更新到最后一行
+                now_ts = pd.Timestamp.now(tz=now_tz)
+                data.loc[now_ts, 'SPY'] = spy_price
+                data.loc[now_ts, 'JNK'] = jnk_price
+    except Exception as e:
+        # 若盘中获取实时现价失败，回退使用 download 的历史数据
+        pass
+
     return data
 
 try:
     df = load_data(period, interval)
     
     if df.empty:
-        st.error("获取数据失败，请尝试更改时间范围或K线级别（例如 5m 数据只能获取最近 60 天）。")
+        st.error("获取数据失败，请尝试更改时间范围或K线级别。")
     else:
         # 计算归一化走势 (以起点为100)
         df_normalized = (df / df.iloc[0]) * 100
@@ -41,30 +77,31 @@ try:
         df['Implied_SPY'] = df['JNK'] * df['Ratio_Mean']
         df['Spread'] = df['Implied_SPY'] - df['SPY']
 
-        # 获取最新数据
+        # 获取最新数据 (包含刚才插入的实时现价)
         latest_spy = df['SPY'].iloc[-1]
         latest_jnk = df['JNK'].iloc[-1]
         implied_spy = df['Implied_SPY'].iloc[-1]
         spread = df['Spread'].iloc[-1]
+        latest_z = df['Z_Score'].iloc[-1]
 
         # 顶部指标卡
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("SPY 现价", f"{latest_spy:.2f}")
-        col2.metric("JNK 现价", f"{latest_jnk:.2f}")
-        col3.metric("SPY 理论价格 (基于JNK)", f"{implied_spy:.2f}", f"{spread:.2f} 差值")
+        col1.metric("SPY 实时价格", f"{latest_spy:.2f}")
+        col2.metric("JNK 实时价格", f"{latest_jnk:.2f}")
+        col3.metric("SPY 理论估值", f"{implied_spy:.2f}", f"{spread:+.2f} 差值")
         
-        signal = "SPY 估值过低 (看多/并轨预期)" if spread > 0 else "SPY 估值过高 (看空)"
-        color = "normal" if spread > 0 else "inverse"
-        col4.metric("当前套利信号", signal, delta_color=color)
+        signal = f"超卖做多 (Z: {latest_z:.2f})" if latest_z < -1.5 else (f"超买做空 (Z: {latest_z:.2f})" if latest_z > 1.5 else f"区间中性 (Z: {latest_z:.2f})")
+        color = "normal" if latest_z < -1.5 else ("inverse" if latest_z > 1.5 else "off")
+        col4.metric("实时信号状态", signal, delta_color=color)
 
-        # 创建 2 行 1 列的子图结构，共享 X 轴以实现上下完美对齐
+        # 创建 2 行 1 列的子图结构，共享 X 轴
         fig = make_subplots(
             rows=2, 
             cols=1, 
             shared_xaxes=True, 
             vertical_spacing=0.08,
             subplot_titles=("SPY 实际价格 vs 理论价格 (基于 JNK)", "JNK/SPY 乖离率 Z-Score"),
-            row_heights=[0.6, 0.4]  # 上图占比 60%，下图占比 40%
+            row_heights=[0.6, 0.4]
         )
 
         # 1. 绘制上图：SPY 实际价格 vs 理论价格
@@ -91,13 +128,13 @@ try:
         fig.update_layout(
             height=650,
             template="plotly_white",
-            hovermode="x unified",  # 鼠标悬停时上下图时间线自动联动对齐
+            hovermode="x unified",
             legend=dict(
-                orientation="h",     # 图例水平排列
+                orientation="h",
                 yanchor="bottom",
-                y=-0.18,             # 调整至底部外侧 (负值代表在坐标轴下方)
+                y=-0.18,
                 xanchor="center",
-                x=0.5                # 居中对齐
+                x=0.5
             ),
             margin=dict(l=20, r=20, t=40, b=60)
         )
